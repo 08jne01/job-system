@@ -2,6 +2,7 @@
 #include "Job.h"
 
 #include <Windows.h>
+#include <tracy/Tracy.hpp>
 
 void* fiber::create_fiber(
     size_t stack_size, 
@@ -20,7 +21,9 @@ void fiber::delete_fiber(void* fiber)
 
 void fiber::switch_to_fiber(void* fiber)
 {
+    //TracyFiberEnter("worker");
     SwitchToFiber(fiber);
+    //TracyFiberLeave;
 }
 
 bool fiber::convert_fiber_to_thread()

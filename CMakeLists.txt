@@ -21,7 +21,9 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(etl)
 
 
-#option ( TRACY_ENABLE "" ON )
+option ( TRACY_ENABLE "" ON )
+option ( TRACY_NO_EXIT "" ON )
+option ( TRACY_FIBERS "" ON )
 FetchContent_Declare (
   tracy
   GIT_REPOSITORY https://github.com/wolfpld/tracy.git
