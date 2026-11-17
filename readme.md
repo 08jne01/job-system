@@ -16,6 +16,6 @@ job::run(context, jobs, &counter);
 job::wait_for_counter(context, counter, 0); // this will block (yield this fibre) until all jobs are complete
 ```
 
-Below is shows how the job queue can schedule jobs onto ever thread reaching near 100% CPU usage (of P cores).
+Below is shows how the job queue can schedule jobs onto every thread reaching near 100% CPU usage (of P cores).
 
 ![calculating primes](image.png)
