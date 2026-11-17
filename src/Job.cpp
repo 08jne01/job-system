@@ -13,6 +13,7 @@
 #include <rigtorp/MPMCQueue.h>
 #include <tracy/TracyC.h>
 #include <unordered_map>
+#include <memory_resource>
 
 #include <tracy/Tracy.hpp>
 
@@ -28,7 +29,6 @@ namespace job
     struct context_t
     {
         system_t* system;
-        //job_t job;
         void* fiber;
     };
 
@@ -62,16 +62,21 @@ namespace job
     {
         static constexpr size_t max_jobs = 2048;
 
-        int n_fibers = 0;
         rigtorp::mpmc::Queue<job_t> jobs{max_jobs};
         rigtorp::mpmc::Queue<void*> fiber_pool{max_jobs};
-
-        std::vector<std::jthread> threads;
-        
-        counter_t root_task{0};
         
         std::vector<context_t> fibers;
         wait_list_t wait_list;
+
+        std::pmr::synchronized_pool_resource counter_allocator{std::pmr::pool_options{
+            .max_blocks_per_chunk = 1024,
+            .largest_required_pool_block = sizeof(counter_t),
+        }};
+
+        std::vector<std::jthread> threads;
+
+        system_info_t info;
+        counter_t root_task{0};
 
         std::mutex lock;
         //rigtorp::mpmc::Queue<job_t> thread_to_fiber{24};
@@ -86,13 +91,31 @@ namespace job
     static inline void* check_wait_list(wait_list_t* wait_list);
     static inline bool check_job_pool(system_t* system, job_t& job);
 
-    static inline void run_existing_counter(const context_t* context, job_t job, counter_t* counter);
-    static inline void run_existing_counter(const context_t* context, std::span<job_t> jobs, counter_t* counter);
+    static inline void run_existing_counter(context_t* context, job_t job, counter_t* counter);
+    static inline void run_existing_counter(context_t* context, std::span<job_t> jobs, counter_t* counter);
     static inline void run_system(void* data);
     static inline void run_system_thread(system_t* system);
     static inline void run_system_entry_point(system_t* system, job_t entry_point);
 
     static inline void wait_for_counter_no_release(const context_t* context, counter_t* counter, int value);
+
+    static inline counter_t* new_counter(std::pmr::synchronized_pool_resource& allocator);
+    static inline void free_counter(std::pmr::synchronized_pool_resource& allocator, counter_t* counter);
+
+    static constexpr bool serial_execution = false;
+}
+
+static inline job::counter_t* job::new_counter(std::pmr::synchronized_pool_resource& allocator)
+{
+    ZoneScoped
+    void* ptr = allocator.allocate(sizeof(counter_t), alignof(counter_t));
+    return ::new(ptr)counter_t;
+}
+
+static inline void job::free_counter(std::pmr::synchronized_pool_resource& allocator, counter_t* counter)
+{
+    ZoneScoped
+    allocator.deallocate(counter, sizeof(counter_t), alignof(counter_t));
 }
 
 static inline void job::run(context_t* context, job_t job)
@@ -121,6 +144,8 @@ static inline void job::push_wait_list(wait_list_t* wait_list, const context_t* 
 static inline void* job::check_wait_list(wait_list_t* wait_list)
 {
     ZoneScoped
+
+    //std::lock_guard lock(wait_list->lock);
 
     void* next_fiber = nullptr;
     if ( ! wait_list->lock.try_lock() )
@@ -195,7 +220,7 @@ static inline void job::run_system(void* data)
 {
     context_t context = *static_cast<context_t*>(data);
     system_t* system = context.system;
-    while ( system->root_task.value != 0 )
+    while ( system->root_task.value.load(std::memory_order_relaxed) )
     {
         job_t job;
 
@@ -372,7 +397,21 @@ job::system_t* job::create_job_system(job_t entry_point, const system_info_t& in
 
     assert(info.n_fibers >= n_threads);
     auto* job_system = new system_t;
-    job_system->n_fibers = info.n_fibers;
+    job_system->info = info;
+
+    if constexpr ( serial_execution )
+    {
+        context_t context = {
+            .system = job_system,
+            .fiber = nullptr,
+        };
+
+        job_system->root_task.value = 0;
+        entry_point.counter = &job_system->root_task;
+
+        run(&context, entry_point);
+        return job_system;
+    }
 
     const int n_real_fibers = info.n_fibers;
     job_system->fibers.resize(n_real_fibers);
@@ -413,17 +452,20 @@ job::system_t* job::create_job_system(job_t entry_point, const system_info_t& in
 
 void job::destroy_job_system(system_t* job_system)
 {
-    job_system->threads.clear();
-    for ( context_t& execution : job_system->fibers )
+    if constexpr ( ! serial_execution )
     {
-        fiber::delete_fiber(execution.fiber);
+        job_system->threads.clear();
+        for ( context_t& execution : job_system->fibers )
+        {
+            fiber::delete_fiber(execution.fiber);
+        }
     }
 
     delete job_system;
 }
 
 static inline void job::run_existing_counter(
-    const context_t* context, 
+    context_t* context, 
     std::span<job_t> jobs, 
     counter_t* counter
 )
@@ -440,12 +482,15 @@ static inline void job::run_existing_counter(
     for ( auto& job : jobs )
     {
         ZoneScopedN("Push")
-        context->system->jobs.push(job);
+        if constexpr ( serial_execution )
+            run(context, job);
+        else
+            context->system->jobs.push(job);
     }
 }
 
 static inline void job::run_existing_counter(
-    const context_t* context, 
+    context_t* context, 
     job_t job, 
     counter_t* counter
 )
@@ -453,23 +498,34 @@ static inline void job::run_existing_counter(
     ZoneScoped
     counter->value = 1;
     job.counter = counter;
-    context->system->jobs.push(job);
+
+    if constexpr ( serial_execution )
+    {
+        run(context, job);
+    }
+    else 
+    {
+        context->system->jobs.push(job);
+    }
 }
 
-void job::run(const context_t* context, job_t job, counter_t** counter)
+void job::run(context_t* context, job_t job, counter_t** counter)
 {
-    *counter = new counter_t;
+    *counter = new_counter(context->system->counter_allocator);
     run_existing_counter(context, job, *counter);
 }
 
-void job::run(const context_t* context, std::span<job_t> jobs, counter_t** counter)
+void job::run(context_t* context, std::span<job_t> jobs, counter_t** counter)
 {
-    *counter = new counter_t;// context->system->counters.create();
+    *counter = new_counter(context->system->counter_allocator);// context->system->counters.create();
     run_existing_counter(context, jobs, *counter);
 }
 
 void job::wait_for_counter_no_release(const context_t* context, counter_t* counter, int value)
 {
+    if ( serial_execution ) // counter does nothing in serial execution
+        return;
+
     //assert(!context->system->fiber_pool.fibers.empty()); // out of fibers
 
     push_wait_list(
@@ -484,7 +540,7 @@ void job::wait_for_counter_no_release(const context_t* context, counter_t* count
         fiber = try_pop_fiber(context->system);
     } while (fiber == nullptr);
 
-    assert(context->system->wait_list.jobs.size() < context->system->n_fibers);
+    assert(context->system->wait_list.fibers.size() < context->system->info.n_fibers);
 
     if ( context->fiber != fiber )
     {
@@ -501,9 +557,7 @@ void job::wait_for_counter_no_release(const context_t* context, counter_t* count
 void job::wait_for_counter(const context_t* context, counter_t* counter, int value)
 {
     wait_for_counter_no_release(context, counter, value);
-
-    delete counter;
-
+    free_counter(context->system->counter_allocator, counter);
     //context->system->counters.destroy(counter);
 }
 

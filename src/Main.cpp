@@ -12,6 +12,8 @@
 #include <Windows.h>
 #include "Thread.h"
 
+#include "delegate.h"
+
 
 struct DoubleTask
 {
@@ -295,11 +297,140 @@ int horrible_windows_function()
 
 }
 
+struct TestClass
+{
+    int state = 10;
 
+    void some_member()
+    {
+        printf("%d\n", state);
+    }
+};
+
+int DelegateTest(const char* s, int x)
+{
+    printf("%s -> %d\n",s, x);
+    return x;
+}
+
+struct SomeStruct
+{
+    int state = 60;
+
+    void Member(int x)
+    {
+        printf("Do thing when battery is on\n");
+        printf("State: %d, x: %d\n", state, x);
+    }
+};
+
+struct Control
+{
+    job::delegate_t<void(int)> on_changed;
+};
+
+int FreeFunction(int capture, double parameter)
+{
+    printf("Capture: %d, Parameter: %lf\n", capture, parameter);
+    return capture;
+}
 
 int main(int argc, char** argv)
 {
     ZoneScoped
+
+    // char capture[8] = "10;";
+
+    // auto x = [capture](){
+
+    // };
+
+    //const int y = sizeof(x);
+
+
+    //job::delegate_t<void()> delegate;
+
+    
+
+    int capture_data = 69;
+
+    
+
+    SomeStruct s;
+    s.state = 69;
+
+    job::delegate_t<void(int)> delegate;
+    delegate.make<&SomeStruct::Member>(&s);
+    delegate.call(420.0);
+
+
+
+    Control control;
+    control.on_changed = delegate;
+
+
+    control.on_changed.call(29);
+    
+
+    // int capture = 24;
+    // delegate.make([capture](double x){
+    //     printf("Capture: %d, Param: %lf\n", capture, x);
+    //     return capture;
+    // });
+
+    // int lambda_return = delegate.call(1.0); // Capture: 24, Param: 1.0
+
+    // delegate.call(1.0);
+
+    //delegate.make<FreeFunction>(capture);
+
+    // int free_return = delegate.call(2.0); // Capture: 24, Param: 2.0
+
+    // SomeStruct s;
+    // delegate.make<&SomeStruct::Member>(&s);
+
+    // int member_return = delegate.call(3.0); // State: 60, x: 3.0
+
+
+    // std::unique_ptr<double> x;
+
+    // job::delegate_t<double(std::unique_ptr<double>&&)> function;
+
+    // function.make([](std::unique_ptr<double>&& x){
+    //     auto y = std::move(x);
+    //     return *y;
+    // });
+
+    //function.call(1.0, 1.0)
+    //delegate.make();
+    
+    // delegate.make([capture](int x){
+    //     printf("Capture: %s : %d\n", capture, x);
+    //     return x;
+    // });
+
+    // delegate.call(2);
+    
+    // delegate.make<DelegateTest>("hello");
+
+    // TestClass c;
+    // delegate.make<&TestClass::some_member>(&c);
+    
+    // delegate.call();
+
+
+    
+
+    //constexpr int x = sizeof(delegate);
+
+    
+    //delegate.make();
+
+    //job::make_delegate<DelegateTest>(delegate, "hello");
+
+    //delegate.call();
+
+    //job::delegate_t delegate = job::make_delegate<DelegateTest, void, const char*>("hello");
 
     //horrible_windows_function();
 
@@ -333,16 +464,19 @@ int main(int argc, char** argv)
         .stack_size = 64'000,
         .reserve_stack_size = 1'000'000
     });
+
+    FrameMark;
+
+
+    
+    job::destroy_job_system(job_system);
+    printf("Done, Exited Threads\n");
+    
     FrameMark;
 
     CalculatePrimes(job);
-
-    FrameMark;
-
-    job::destroy_job_system(job_system);
-    printf("Done, Exited Threads\n");
-
     
+    FrameMark;
 
     // while ( true )
     // {
